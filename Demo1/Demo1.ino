@@ -17,44 +17,39 @@ Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
 // General Constants
 // ============================================================
 
-// Standard hobby servo frequency
+// Standard servo frequency for MG996R
 const int SERVO_FREQ = 50;
 
 
 // ============================================================
 // ServoJoint Class
 //
-// Handles:
-// - PWM channel
-// - physical joint limits
-// - servo direction
-// - servo offset
-// - PWM calibration
+// Controls one physical revolute joint.
 //
+// Stores:
+// - PCA9685 channel
+// - joint limits
+// - servo offset
+// - servo direction
+// - PWM limits
 // ============================================================
 
 class ServoJoint
 {
 private:
 
-    // PCA9685 channel
     int channel;
 
-    // Physical joint limits in degrees
     float minJointAngle;
     float maxJointAngle;
 
-    // Servo angle corresponding to joint angle = 0 deg
     float servoOffset;
 
-    // true if servo motion is opposite to joint motion
     bool reversed;
 
-    // Calibrated PCA9685 pulse limits
     int minPulse;
     int maxPulse;
 
-    // Current joint angle
     float currentJointAngle;
 
 
@@ -89,13 +84,7 @@ public:
 
 
     // --------------------------------------------------------
-    // Convert joint angle to servo angle
-    //
-    // Normal:
-    // servoAngle = offset + jointAngle
-    //
-    // Reversed:
-    // servoAngle = offset - jointAngle
+    // Convert robot joint angle to servo angle
     // --------------------------------------------------------
 
     float jointToServoAngle(float jointAngle) const
@@ -104,27 +93,26 @@ public:
         {
             return servoOffset - jointAngle;
         }
-        else
-        {
-            return servoOffset + jointAngle;
-        }
+
+        return servoOffset + jointAngle;
     }
 
 
     // --------------------------------------------------------
     // Convert servo angle to PCA9685 pulse
-    //
-    // Assumes servo range of approximately 0 to 180 degrees.
-    //
-    // minPulse and maxPulse must be calibrated.
     // --------------------------------------------------------
 
     int servoAngleToPulse(float servoAngle) const
     {
-        // Constrain servo angle
-        servoAngle = constrain(servoAngle, 0.0f, 180.0f);
+        // Keep servo command inside 0 to 180 degrees
+        servoAngle = constrain(
+            servoAngle,
+            0.0f,
+            180.0f
+        );
 
-        // Convert servo angle to PWM count
+
+        // Convert 0-180 degrees into PCA9685 pulse count
         int pulse = map(
             (int)servoAngle,
             0,
@@ -133,40 +121,39 @@ public:
             maxPulse
         );
 
+
         return pulse;
     }
 
 
     // --------------------------------------------------------
-    // Move joint
-    //
-    // Requested angle is first constrained to the
-    // physical limits of the joint.
+    // Move physical joint
     // --------------------------------------------------------
 
     void setAngle(float jointAngle)
     {
-        // Enforce physical joint limits
+        // Apply physical joint limits
         jointAngle = constrain(
             jointAngle,
             minJointAngle,
             maxJointAngle
         );
 
+
         currentJointAngle = jointAngle;
 
 
-        // Convert joint angle to actual servo angle
+        // Convert robot angle into actual servo angle
         float servoAngle =
             jointToServoAngle(jointAngle);
 
 
-        // Convert servo angle to PWM pulse
+        // Convert servo angle into PWM value
         int pulse =
             servoAngleToPulse(servoAngle);
 
 
-        // Send command to PCA9685
+        // Send PWM command
         pwm.setPWM(
             channel,
             0,
@@ -176,7 +163,7 @@ public:
 
 
     // --------------------------------------------------------
-    // Return current joint angle
+    // Return current angle
     // --------------------------------------------------------
 
     float getAngle() const
@@ -186,7 +173,7 @@ public:
 
 
     // --------------------------------------------------------
-    // Return minimum physical limit
+    // Return minimum joint limit
     // --------------------------------------------------------
 
     float getMinAngle() const
@@ -196,7 +183,7 @@ public:
 
 
     // --------------------------------------------------------
-    // Return maximum physical limit
+    // Return maximum joint limit
     // --------------------------------------------------------
 
     float getMaxAngle() const
@@ -207,9 +194,139 @@ public:
 
 
 // ============================================================
+// Claw Class
+//
+// Controls the gripper independently from the robot DH chain.
+//
+// The claw is not treated as an additional kinematic joint.
+// It simply opens and closes using another servo.
+// ============================================================
+
+class Claw
+{
+private:
+
+    // PCA9685 channel used by claw servo
+    int channel;
+
+    // Servo angle corresponding to open position
+    float openAngle;
+
+    // Servo angle corresponding to closed position
+    float closedAngle;
+
+    // PWM calibration
+    int minPulse;
+    int maxPulse;
+
+    // Keep track of claw state
+    bool clawClosed;
+
+
+    // --------------------------------------------------------
+    // Convert servo angle to PWM pulse
+    // --------------------------------------------------------
+
+    int angleToPulse(float angle) const
+    {
+        angle = constrain(
+            angle,
+            0.0f,
+            180.0f
+        );
+
+
+        return map(
+            (int)angle,
+            0,
+            180,
+            minPulse,
+            maxPulse
+        );
+    }
+
+
+public:
+
+    // --------------------------------------------------------
+    // Constructor
+    // --------------------------------------------------------
+
+    Claw(int pwmChannel,
+         float openPosition,
+         float closedPosition,
+         int minimumPulse,
+         int maximumPulse)
+    {
+        channel = pwmChannel;
+
+        openAngle = openPosition;
+        closedAngle = closedPosition;
+
+        minPulse = minimumPulse;
+        maxPulse = maximumPulse;
+
+        clawClosed = false;
+    }
+
+
+    // --------------------------------------------------------
+    // Open claw
+    // --------------------------------------------------------
+
+    void open()
+    {
+        int pulse =
+            angleToPulse(openAngle);
+
+
+        pwm.setPWM(
+            channel,
+            0,
+            pulse
+        );
+
+
+        clawClosed = false;
+    }
+
+
+    // --------------------------------------------------------
+    // Close claw
+    // --------------------------------------------------------
+
+    void close()
+    {
+        int pulse =
+            angleToPulse(closedAngle);
+
+
+        pwm.setPWM(
+            channel,
+            0,
+            pulse
+        );
+
+
+        clawClosed = true;
+    }
+
+
+    // --------------------------------------------------------
+    // Return claw state
+    // --------------------------------------------------------
+
+    bool isClosed() const
+    {
+        return clawClosed;
+    }
+};
+
+
+// ============================================================
 // DHLink Class
 //
-// Represents one row of the DH table.
+// Represents one DH transformation.
 // ============================================================
 
 class DHLink
@@ -220,7 +337,6 @@ private:
     float alpha;
     float d;
 
-    // Stored internally in radians
     float theta;
 
 
@@ -243,7 +359,7 @@ public:
 
 
     // --------------------------------------------------------
-    // Set theta using degrees
+    // Set theta in degrees
     // --------------------------------------------------------
 
     void setThetaDegrees(float thetaDegrees)
@@ -254,7 +370,7 @@ public:
 
 
     // --------------------------------------------------------
-    // Build DH transformation matrix
+    // Build standard DH transformation matrix
     // --------------------------------------------------------
 
     Matrix<4, 4> getTransformationMatrix() const
@@ -286,11 +402,10 @@ public:
 // ============================================================
 // RobotArm Class
 //
-// Combines:
-// - Servo control
-// - physical joint limits
-// - DH kinematics
-//
+// Controls:
+// - 5 arm joints
+// - forward kinematics
+// - claw
 // ============================================================
 
 class RobotArm
@@ -298,21 +413,19 @@ class RobotArm
 private:
 
     // --------------------------------------------------------
-    // Servo joints
+    // Physical servo joints
     //
     // Parameters:
     //
     // channel
-    // min joint angle
-    // max joint angle
-    // servo offset
+    // min angle
+    // max angle
+    // offset
     // reversed?
-    // min PWM pulse
-    // max PWM pulse
+    // min pulse
+    // max pulse
     //
-    // IMPORTANT:
-    // These are example values.
-    // Calibrate for your actual robot.
+    // These values should be calibrated.
     // --------------------------------------------------------
 
     ServoJoint joint1;
@@ -320,6 +433,21 @@ private:
     ServoJoint joint3;
     ServoJoint joint4;
     ServoJoint joint5;
+
+
+    // --------------------------------------------------------
+    // Separate claw servo
+    //
+    // Channel 5
+    //
+    // Example:
+    // 90 degrees = open
+    // 20 degrees = closed
+    //
+    // Calibrate these values for your claw.
+    // --------------------------------------------------------
+
+    Claw claw;
 
 
     // --------------------------------------------------------
@@ -341,15 +469,18 @@ public:
 
     RobotArm()
 
-        // Servo configuration
+        // -----------------------
+        // Joint servo definitions
+        // -----------------------
+
         : joint1(
-              0,          // PCA9685 channel
-              -90.0f,     // minimum joint angle
-              90.0f,      // maximum joint angle
-              90.0f,      // servo offset
-              false,      // reversed?
-              120,        // minimum pulse
-              500         // maximum pulse
+              0,
+              -90.0f,
+              90.0f,
+              90.0f,
+              false,
+              120,
+              500
           ),
 
           joint2(
@@ -393,7 +524,23 @@ public:
           ),
 
 
+          // -----------------------
+          // Claw servo definition
+          // -----------------------
+
+          claw(
+              5,          // PCA9685 channel
+              90.0f,      // open angle
+              20.0f,      // closed angle
+              120,        // minimum pulse
+              500         // maximum pulse
+          ),
+
+
+          // -----------------------
           // DH table
+          // -----------------------
+
           link1(
               0.0f,
               PI / 2.0f,
@@ -429,14 +576,7 @@ public:
 
 
     // --------------------------------------------------------
-    // Set all joint angles
-    //
-    // This function:
-    //
-    // 1. Sends safe commands to the servos
-    // 2. Retrieves the actual constrained angles
-    // 3. Updates the DH model
-    //
+    // Set arm joint angles
     // --------------------------------------------------------
 
     void setJointAngles(float theta1,
@@ -445,7 +585,7 @@ public:
                         float theta4,
                         float theta5)
     {
-        // Move servos
+        // Move physical servos
         joint1.setAngle(theta1);
         joint2.setAngle(theta2);
         joint3.setAngle(theta3);
@@ -453,7 +593,7 @@ public:
         joint5.setAngle(theta5);
 
 
-        // Update DH model using actual constrained angles
+        // Update DH model using constrained angles
         link1.setThetaDegrees(joint1.getAngle());
         link2.setThetaDegrees(joint2.getAngle());
         link3.setThetaDegrees(joint3.getAngle());
@@ -463,9 +603,31 @@ public:
 
 
     // --------------------------------------------------------
+    // Open claw
+    // --------------------------------------------------------
+
+    void openClaw()
+    {
+        claw.open();
+
+        Serial.println("Claw opened.");
+    }
+
+
+    // --------------------------------------------------------
+    // Close claw
+    // --------------------------------------------------------
+
+    void closeClaw()
+    {
+        claw.close();
+
+        Serial.println("Claw closed.");
+    }
+
+
+    // --------------------------------------------------------
     // Compute forward kinematics
-    //
-    // T05 = T01 * T12 * T23 * T34 * T45
     // --------------------------------------------------------
 
     Matrix<4, 4> forwardKinematics() const
@@ -495,101 +657,6 @@ public:
 
 
     // --------------------------------------------------------
-    // Print current constrained joint angles
-    // --------------------------------------------------------
-
-    void printJointAngles() const
-    {
-        Serial.println("Joint Angles:");
-
-        Serial.print("Theta 1 = ");
-        Serial.println(joint1.getAngle(), 2);
-
-        Serial.print("Theta 2 = ");
-        Serial.println(joint2.getAngle(), 2);
-
-        Serial.print("Theta 3 = ");
-        Serial.println(joint3.getAngle(), 2);
-
-        Serial.print("Theta 4 = ");
-        Serial.println(joint4.getAngle(), 2);
-
-        Serial.print("Theta 5 = ");
-        Serial.println(joint5.getAngle(), 2);
-
-        Serial.println();
-    }
-
-
-    // --------------------------------------------------------
-    // Print physical joint limits
-    // --------------------------------------------------------
-
-    void printJointLimits() const
-    {
-        Serial.println("Joint Physical Limits:");
-
-        Serial.print("Joint 1: ");
-        Serial.print(joint1.getMinAngle());
-        Serial.print(" to ");
-        Serial.println(joint1.getMaxAngle());
-
-        Serial.print("Joint 2: ");
-        Serial.print(joint2.getMinAngle());
-        Serial.print(" to ");
-        Serial.println(joint2.getMaxAngle());
-
-        Serial.print("Joint 3: ");
-        Serial.print(joint3.getMinAngle());
-        Serial.print(" to ");
-        Serial.println(joint3.getMaxAngle());
-
-        Serial.print("Joint 4: ");
-        Serial.print(joint4.getMinAngle());
-        Serial.print(" to ");
-        Serial.println(joint4.getMaxAngle());
-
-        Serial.print("Joint 5: ");
-        Serial.print(joint5.getMinAngle());
-        Serial.print(" to ");
-        Serial.println(joint5.getMaxAngle());
-
-        Serial.println();
-    }
-
-
-    // --------------------------------------------------------
-    // Print transformation matrix
-    // --------------------------------------------------------
-
-    void printTransformationMatrix() const
-    {
-        Matrix<4, 4> T05 =
-            forwardKinematics();
-
-
-        Serial.println("T05 = ");
-
-        for (int row = 0; row < 4; row++)
-        {
-            for (int col = 0; col < 4; col++)
-            {
-                Serial.print(
-                    T05(row, col),
-                    4
-                );
-
-                Serial.print("\t");
-            }
-
-            Serial.println();
-        }
-
-        Serial.println();
-    }
-
-
-    // --------------------------------------------------------
     // Print end-effector position
     // --------------------------------------------------------
 
@@ -599,24 +666,46 @@ public:
             forwardKinematics();
 
 
-        float x = T05(0, 3);
-        float y = T05(1, 3);
-        float z = T05(2, 3);
-
-
         Serial.println("End-Effector Position:");
 
         Serial.print("X = ");
-        Serial.print(x, 3);
+        Serial.print(T05(0, 3), 3);
         Serial.println(" cm");
 
         Serial.print("Y = ");
-        Serial.print(y, 3);
+        Serial.print(T05(1, 3), 3);
         Serial.println(" cm");
 
         Serial.print("Z = ");
-        Serial.print(z, 3);
+        Serial.print(T05(2, 3), 3);
         Serial.println(" cm");
+
+        Serial.println();
+    }
+
+
+    // --------------------------------------------------------
+    // Print joint angles
+    // --------------------------------------------------------
+
+    void printJointAngles() const
+    {
+        Serial.println("Joint Angles:");
+
+        Serial.print("Theta 1 = ");
+        Serial.println(joint1.getAngle());
+
+        Serial.print("Theta 2 = ");
+        Serial.println(joint2.getAngle());
+
+        Serial.print("Theta 3 = ");
+        Serial.println(joint3.getAngle());
+
+        Serial.print("Theta 4 = ");
+        Serial.println(joint4.getAngle());
+
+        Serial.print("Theta 5 = ");
+        Serial.println(joint5.getAngle());
 
         Serial.println();
     }
@@ -636,66 +725,68 @@ RobotArm robot;
 
 void setup()
 {
-    // Start serial communication
+    // Start serial monitor
     Serial.begin(115200);
 
 
-    // Start I2C communication
+    // Start I2C
     Wire.begin();
 
 
     // Initialize PCA9685
     pwm.begin();
 
-
-    // PCA9685 oscillator frequency
     pwm.setOscillatorFrequency(27000000);
 
-
-    // MG996R uses standard servo PWM
     pwm.setPWMFreq(SERVO_FREQ);
 
 
-    // Allow hardware to initialize
     delay(1000);
 
 
     Serial.println();
-    Serial.println("MG996R 5-DOF Robot Arm");
+    Serial.println("5-DOF Robot Arm with Claw");
     Serial.println();
 
 
-    // Print configured limits
-    robot.printJointLimits();
+    // --------------------------------------------------------
+    // Open claw initially
+    // --------------------------------------------------------
+
+    robot.openClaw();
 
 
     // --------------------------------------------------------
-    // Initial robot pose
-    //
-    // Start with a conservative pose.
+    // Move robot to initial position
     // --------------------------------------------------------
 
     robot.setJointAngles(
-        0.0f,     // theta1
-        45.0f,    // theta2
-        0.0f,     // theta3
-        0.0f,     // theta4
-        0.0f      // theta5
+        0.0f,
+        45.0f,
+        0.0f,
+        0.0f,
+        0.0f
     );
 
 
-    // Give the servos time to move
     delay(1500);
 
 
-    // Print current joint angles
+    // Print kinematic information
     robot.printJointAngles();
 
-
-    // Print forward kinematics
-    robot.printTransformationMatrix();
-
     robot.printEndEffectorPosition();
+
+
+    // --------------------------------------------------------
+    // Example claw operation
+    //
+    // Wait, then close claw.
+    // --------------------------------------------------------
+
+    delay(2000);
+
+    robot.closeClaw();
 }
 
 
@@ -705,5 +796,5 @@ void setup()
 
 void loop()
 {
-    // Robot motion can be added here later.
+    // Future robot sequences can be added here.
 }
