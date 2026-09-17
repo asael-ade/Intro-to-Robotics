@@ -1,9 +1,43 @@
-#include <Arduino.h>
+#include <Servo.h>
+#include <BasicLinearAlgebra.h>
 #include <math.h>
+
+using namespace BLA;
+
+// =====================================================
+// Servos
+// =====================================================
+
+Servo servo[5];
+
+const int servoPins[5] = {
+  3, 5, 6, 9, 10
+};
+
+
+// =====================================================
+// Servo zero positions
+//
+// This is the physical servo angle corresponding
+// to theta_i = 0 degrees in your DH model.
+//
+// Adjust these after calibrating your robot.
+// =====================================================
+
+float servoZero[5] = {
+  90,
+  90,
+  90,
+  90,
+  90
+};
+
 
 // =====================================================
 // Robot dimensions
-// Change these values to match your robot
+//
+// Replace these with your actual dimensions.
+// Use the same units for every length.
 // =====================================================
 
 float d1 = 10.0;
@@ -17,47 +51,30 @@ float d5 = 2.0;
 
 
 // =====================================================
-// Joint angles in degrees
-// =====================================================
-
-float theta1 = 0.0;
-float theta2 = 0.0;
-float theta3 = 0.0;
-float theta4 = 0.0;
-float theta5 = 0.0;
-
-
-// =====================================================
 // Convert degrees to radians
 // =====================================================
 
-float deg2rad(float angleDeg)
+float deg2rad(float degrees)
 {
-  return angleDeg * PI / 180.0;
+  return degrees * PI / 180.0;
 }
 
 
 // =====================================================
-// Standard DH Transformation Matrix
+// DH Transformation
 //
-// Parameters:
-// r     = link length
-// alpha = link twist
-// d     = link offset
-// theta = joint angle
+// Standard DH:
 //
-// T =
-// [ cosθ  -sinθcosα   sinθsinα   rcosθ ]
-// [ sinθ   cosθcosα  -cosθsinα   rsinθ ]
-// [  0        sinα       cosα       d   ]
-// [  0          0          0         1   ]
+// A_i = Rot(z,theta)
+//       Trans(z,d)
+//       Trans(x,r)
+//       Rot(x,alpha)
 // =====================================================
 
-void DHTransform(float r,
-                 float alpha,
-                 float d,
-                 float theta,
-                 float T[4][4])
+Matrix<4,4> DH(float r,
+               float alpha,
+               float d,
+               float theta)
 {
   float ct = cos(theta);
   float st = sin(theta);
@@ -65,81 +82,14 @@ void DHTransform(float r,
   float ca = cos(alpha);
   float sa = sin(alpha);
 
-  T[0][0] = ct;
-  T[0][1] = -st * ca;
-  T[0][2] = st * sa;
-  T[0][3] = r * ct;
+  Matrix<4,4> T = {
+     ct,   -st * ca,    st * sa,    r * ct,
+     st,    ct * ca,   -ct * sa,    r * st,
+      0,         sa,         ca,         d,
+      0,          0,          0,         1
+  };
 
-  T[1][0] = st;
-  T[1][1] = ct * ca;
-  T[1][2] = -ct * sa;
-  T[1][3] = r * st;
-
-  T[2][0] = 0;
-  T[2][1] = sa;
-  T[2][2] = ca;
-  T[2][3] = d;
-
-  T[3][0] = 0;
-  T[3][1] = 0;
-  T[3][2] = 0;
-  T[3][3] = 1;
-}
-
-
-// =====================================================
-// Multiply two 4x4 matrices
-//
-// C = A * B
-// =====================================================
-
-void matrixMultiply(float A[4][4],
-                    float B[4][4],
-                    float C[4][4])
-{
-  float temp[4][4];
-
-  for (int i = 0; i < 4; i++)
-  {
-    for (int j = 0; j < 4; j++)
-    {
-      temp[i][j] = 0;
-
-      for (int k = 0; k < 4; k++)
-      {
-        temp[i][j] += A[i][k] * B[k][j];
-      }
-    }
-  }
-
-  for (int i = 0; i < 4; i++)
-  {
-    for (int j = 0; j < 4; j++)
-    {
-      C[i][j] = temp[i][j];
-    }
-  }
-}
-
-
-// =====================================================
-// Print 4x4 matrix
-// =====================================================
-
-void printMatrix(float M[4][4])
-{
-  for (int i = 0; i < 4; i++)
-  {
-    for (int j = 0; j < 4; j++)
-    {
-      Serial.print(M[i][j], 4);
-      Serial.print("\t");
-    }
-
-    Serial.println();
-  }
-
-  Serial.println();
+  return T;
 }
 
 
@@ -147,184 +97,316 @@ void printMatrix(float M[4][4])
 // Forward Kinematics
 // =====================================================
 
-void forwardKinematics()
+Matrix<4,4> forwardKinematics(float t1,
+                              float t2,
+                              float t3,
+                              float t4,
+                              float t5)
 {
-  // Individual transformation matrices
+  // Convert joint angles to radians
 
-  float T01[4][4];
-  float T12[4][4];
-  float T23[4][4];
-  float T34[4][4];
-  float T45[4][4];
-
-  // Combined matrices
-
-  float T02[4][4];
-  float T03[4][4];
-  float T04[4][4];
-  float T05[4][4];
+  t1 = deg2rad(t1);
+  t2 = deg2rad(t2);
+  t3 = deg2rad(t3);
+  t4 = deg2rad(t4);
+  t5 = deg2rad(t5);
 
 
-  // Convert angles from degrees to radians
-
-  float th1 = deg2rad(theta1);
-  float th2 = deg2rad(theta2);
-  float th3 = deg2rad(theta3);
-  float th4 = deg2rad(theta4);
-  float th5 = deg2rad(theta5);
-
-
-  // ===================================================
-  // DH TABLE
+  // DH table from your drawing
   //
-  // Link | r   | alpha | d  | theta
-  // ----------------------------------
-  // 1    | 0   | pi/2  | d1 | theta1
-  // 2    | r2  | 0     | 0  | theta2
-  // 3    | r3  | 0     | 0  | theta3
-  // 4    | r4  | 0     | 0  | theta4
-  // 5    | r5  | pi/2  | d5 | theta5
-  // ===================================================
+  // Link    r       alpha      d       theta
+  //
+  // 1       0       pi/2       d1      theta1
+  // 2       r2      0          0       theta2
+  // 3       r3      0          0       theta3
+  // 4       r4      0          0       theta4
+  // 5       r5      pi/2       d5      theta5
 
 
-  // Link 1
-  DHTransform(
+  Matrix<4,4> T01 = DH(
     0,
     PI / 2,
     d1,
-    th1,
-    T01
+    t1
   );
 
-
-  // Link 2
-  DHTransform(
+  Matrix<4,4> T12 = DH(
     r2,
     0,
     0,
-    th2,
-    T12
+    t2
   );
 
-
-  // Link 3
-  DHTransform(
+  Matrix<4,4> T23 = DH(
     r3,
     0,
     0,
-    th3,
-    T23
+    t3
   );
 
-
-  // Link 4
-  DHTransform(
+  Matrix<4,4> T34 = DH(
     r4,
     0,
     0,
-    th4,
-    T34
+    t4
   );
 
-
-  // Link 5
-  DHTransform(
+  Matrix<4,4> T45 = DH(
     r5,
     PI / 2,
     d5,
-    th5,
-    T45
+    t5
   );
 
 
-  // ===================================================
-  // Calculate complete transformation
-  //
-  // T05 = T01 * T12 * T23 * T34 * T45
-  // ===================================================
+  // Complete transformation
 
-  matrixMultiply(T01, T12, T02);
+  Matrix<4,4> T05 =
+      T01 *
+      T12 *
+      T23 *
+      T34 *
+      T45;
 
-  matrixMultiply(T02, T23, T03);
-
-  matrixMultiply(T03, T34, T04);
-
-  matrixMultiply(T04, T45, T05);
+  return T05;
+}
 
 
-  // ===================================================
-  // Print individual transformations
-  // ===================================================
+// =====================================================
+// Move Robot
+//
+// Input angles are DH joint angles.
+// =====================================================
 
-  Serial.println("T01:");
-  printMatrix(T01);
-
-  Serial.println("T12:");
-  printMatrix(T12);
-
-  Serial.println("T23:");
-  printMatrix(T23);
-
-  Serial.println("T34:");
-  printMatrix(T34);
-
-  Serial.println("T45:");
-  printMatrix(T45);
-
-
-  // ===================================================
-  // Print final transformation
-  // ===================================================
-
-  Serial.println("T05:");
-  printMatrix(T05);
+void moveRobot(float t1,
+               float t2,
+               float t3,
+               float t4,
+               float t5)
+{
+  float theta[5] = {
+    t1,
+    t2,
+    t3,
+    t4,
+    t5
+  };
 
 
-  // ===================================================
-  // Extract end-effector position
-  // ===================================================
+  for (int i = 0; i < 5; i++)
+  {
+    // Convert DH angle to physical servo position
 
-  float x = T05[0][3];
-  float y = T05[1][3];
-  float z = T05[2][3];
+    float servoAngle =
+      servoZero[i] + theta[i];
 
+
+    // Servo can only accept 0-180 degrees
+
+    servoAngle = constrain(
+      servoAngle,
+      0,
+      180
+    );
+
+
+    servo[i].write(servoAngle);
+  }
+
+
+  // Calculate FK
+
+  Matrix<4,4> T05 =
+    forwardKinematics(
+      t1,
+      t2,
+      t3,
+      t4,
+      t5
+    );
+
+
+  // Position of end effector
+
+  float x = T05(0,3);
+  float y = T05(1,3);
+  float z = T05(2,3);
+
+
+  Serial.println();
+  Serial.println("Robot moved to:");
+
+  Serial.print("theta1 = ");
+  Serial.println(t1);
+
+  Serial.print("theta2 = ");
+  Serial.println(t2);
+
+  Serial.print("theta3 = ");
+  Serial.println(t3);
+
+  Serial.print("theta4 = ");
+  Serial.println(t4);
+
+  Serial.print("theta5 = ");
+  Serial.println(t5);
+
+
+  Serial.println();
 
   Serial.println("End Effector Position:");
 
   Serial.print("X = ");
-  Serial.println(x, 4);
+  Serial.println(x, 3);
 
   Serial.print("Y = ");
-  Serial.println(y, 4);
+  Serial.println(y, 3);
 
   Serial.print("Z = ");
-  Serial.println(z, 4);
+  Serial.println(z, 3);
 
   Serial.println();
 }
 
 
 // =====================================================
-// Arduino setup
+// HOME
+// =====================================================
+
+void homeRobot()
+{
+  moveRobot(
+    0,
+    0,
+    0,
+    0,
+    0
+  );
+}
+
+
+// =====================================================
+// Setup
 // =====================================================
 
 void setup()
 {
   Serial.begin(115200);
 
-  delay(1000);
 
-  Serial.println("5-DOF Robot Forward Kinematics");
-  Serial.println("==============================");
+  // Attach all five servos
 
-  forwardKinematics();
+  for (int i = 0; i < 5; i++)
+  {
+    servo[i].attach(
+      servoPins[i]
+    );
+
+    servo[i].write(
+      servoZero[i]
+    );
+  }
+
+
+  delay(500);
+
+
+  Serial.println();
+  Serial.println("===============================");
+  Serial.println("5-DOF Robot Controller");
+  Serial.println("===============================");
+
+  Serial.println();
+
+  Serial.println(
+    "Enter DH joint angles:"
+  );
+
+  Serial.println(
+    "theta1 theta2 theta3 theta4 theta5"
+  );
+
+  Serial.println();
+
+  Serial.println("Example:");
+
+  Serial.println(
+    "30 45 -20 10 30"
+  );
+
+  Serial.println();
+
+  Serial.println(
+    "Type HOME for zero configuration."
+  );
 }
 
 
 // =====================================================
-// Arduino loop
+// Loop
 // =====================================================
 
 void loop()
 {
+  if (Serial.available())
+  {
+    String command =
+      Serial.readStringUntil('\n');
+
+    command.trim();
+
+
+    // HOME command
+
+    if (command.equalsIgnoreCase("HOME"))
+    {
+      homeRobot();
+
+      return;
+    }
+
+
+    // Read angles
+
+    float t1;
+    float t2;
+    float t3;
+    float t4;
+    float t5;
+
+
+    int values =
+      sscanf(
+        command.c_str(),
+        "%f %f %f %f %f",
+        &t1,
+        &t2,
+        &t3,
+        &t4,
+        &t5
+      );
+
+
+    if (values == 5)
+    {
+      moveRobot(
+        t1,
+        t2,
+        t3,
+        t4,
+        t5
+      );
+    }
+
+    else
+    {
+      Serial.println(
+        "Invalid command."
+      );
+
+      Serial.println(
+        "Example: 30 45 -20 10 30"
+      );
+    }
+  }
 }
