@@ -1,258 +1,437 @@
-#include <Arduino.h>
+#include <Wire.h>
+#include <Adafruit_PWMServoDriver.h>
+#include <BasicLinearAlgebra.h>
 #include <math.h>
 
-#define N 4
-
-// Robot dimensions
-// Change these to your actual dimensions.
-// All distances must use the same units.
-float d1 = 10.0;
-float r2 = 10.0;
-float r3 = 5.0;
-float r4 = 5.0;
-float r5 = 2.0;
-float d5 = 2.0;
-
-// Joint angles in degrees
-float theta1 = 0.0;
-float theta2 = 0.0;
-float theta3 = 0.0;
-float theta4 = 0.0;
-float theta5 = 0.0;
+using namespace BLA;
 
 
-// --------------------------------------------------
-// Convert degrees to radians
-// --------------------------------------------------
-float deg2rad(float angle)
-{
-  return angle * PI / 180.0;
-}
+// ============================================================
+// PCA9685 Servo Driver
+// ============================================================
+
+Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
 
 
-// --------------------------------------------------
-// Create DH Transformation Matrix
+// ============================================================
+// General Constants
+// ============================================================
+
+// Number of joints in the robot
+const int NUM_JOINTS = 5;
+
+// Servo PWM frequency
+const int SERVO_FREQ = 50;
+
+
+// ============================================================
+// DHLink Class
 //
-// Standard DH convention:
+// Represents one row of the Denavit-Hartenberg table.
 //
-// [ cosθ  -sinθcosα   sinθsinα   r cosθ ]
-// [ sinθ   cosθcosα  -cosθsinα   r sinθ ]
-// [  0        sinα       cosα       d   ]
-// [  0          0          0         1   ]
-// --------------------------------------------------
-void DH(float r, float alpha, float d, float theta,
-        float T[4][4])
-{
-  float ct = cos(theta);
-  float st = sin(theta);
-
-  float ca = cos(alpha);
-  float sa = sin(alpha);
-
-  T[0][0] = ct;
-  T[0][1] = -st * ca;
-  T[0][2] = st * sa;
-  T[0][3] = r * ct;
-
-  T[1][0] = st;
-  T[1][1] = ct * ca;
-  T[1][2] = -ct * sa;
-  T[1][3] = r * st;
-
-  T[2][0] = 0;
-  T[2][1] = sa;
-  T[2][2] = ca;
-  T[2][3] = d;
-
-  T[3][0] = 0;
-  T[3][1] = 0;
-  T[3][2] = 0;
-  T[3][3] = 1;
-}
-
-
-// --------------------------------------------------
-// Multiply two 4x4 matrices
+// Each link has:
 //
-// C = A * B
-// --------------------------------------------------
-void matrixMultiply(float A[4][4],
-                    float B[4][4],
-                    float C[4][4])
+// r     = distance along x_i
+// alpha = angle between z_(i-1) and z_i
+// d     = distance along z_(i-1)
+// theta = joint rotation
+//
+// ============================================================
+
+class DHLink
 {
-  float temp[4][4];
+private:
 
-  for (int i = 0; i < 4; i++)
-  {
-    for (int j = 0; j < 4; j++)
+    // DH parameters
+    float r;
+    float alpha;
+    float d;
+    float theta;
+
+public:
+
+    // --------------------------------------------------------
+    // Constructor
+    //
+    // rValue     = link length
+    // alphaValue = twist angle in radians
+    // dValue     = link offset
+    //
+    // theta starts at zero.
+    // --------------------------------------------------------
+
+    DHLink(float rValue,
+           float alphaValue,
+           float dValue)
     {
-      temp[i][j] = 0;
-
-      for (int k = 0; k < 4; k++)
-      {
-        temp[i][j] += A[i][k] * B[k][j];
-      }
-    }
-  }
-
-  // Copy temporary matrix into output matrix
-  for (int i = 0; i < 4; i++)
-  {
-    for (int j = 0; j < 4; j++)
-    {
-      C[i][j] = temp[i][j];
-    }
-  }
-}
-
-
-// --------------------------------------------------
-// Print a 4x4 matrix
-// --------------------------------------------------
-void printMatrix(float M[4][4])
-{
-  for (int i = 0; i < 4; i++)
-  {
-    for (int j = 0; j < 4; j++)
-    {
-      Serial.print(M[i][j], 4);
-      Serial.print("\t");
+        r = rValue;
+        alpha = alphaValue;
+        d = dValue;
+        theta = 0.0f;
     }
 
-    Serial.println();
-  }
 
-  Serial.println();
-}
+    // --------------------------------------------------------
+    // Set joint angle using degrees
+    // --------------------------------------------------------
+
+    void setThetaDegrees(float thetaDegrees)
+    {
+        theta = thetaDegrees * PI / 180.0f;
+    }
 
 
-// --------------------------------------------------
-// Forward Kinematics
-// --------------------------------------------------
-void forwardKinematics()
+    // --------------------------------------------------------
+    // Set joint angle directly in radians
+    // --------------------------------------------------------
+
+    void setThetaRadians(float thetaRadians)
+    {
+        theta = thetaRadians;
+    }
+
+
+    // --------------------------------------------------------
+    // Return current theta value in radians
+    // --------------------------------------------------------
+
+    float getTheta() const
+    {
+        return theta;
+    }
+
+
+    // --------------------------------------------------------
+    // Generate the DH homogeneous transformation matrix
+    //
+    // Standard DH convention:
+    //
+    //      [ cosθ  -sinθcosα   sinθsinα   r cosθ ]
+    // A =  [ sinθ   cosθcosα  -cosθsinα   r sinθ ]
+    //      [  0        sinα       cosα       d   ]
+    //      [  0         0          0         1   ]
+    //
+    // --------------------------------------------------------
+
+    Matrix<4, 4> getTransformationMatrix() const
+    {
+        float ct = cos(theta);
+        float st = sin(theta);
+
+        float ca = cos(alpha);
+        float sa = sin(alpha);
+
+
+        Matrix<4, 4> A = {
+
+            ct,     -st * ca,      st * sa,      r * ct,
+
+            st,      ct * ca,     -ct * sa,      r * st,
+
+            0.0f,    sa,           ca,           d,
+
+            0.0f,    0.0f,         0.0f,         1.0f
+        };
+
+
+        return A;
+    }
+};
+
+
+// ============================================================
+// RobotArm Class
+//
+// Represents the complete 5-DOF robot.
+// It contains all five DH links and performs forward kinematics.
+// ============================================================
+
+class RobotArm
 {
-  float T01[4][4];
-  float T12[4][4];
-  float T23[4][4];
-  float T34[4][4];
-  float T45[4][4];
+private:
 
-  float T02[4][4];
-  float T03[4][4];
-  float T04[4][4];
-  float T05[4][4];
+    // --------------------------------------------------------
+    // DH Table
+    //
+    // Link    r       alpha       d
+    //
+    // 1       0       pi/2       11.5
+    // 2      10.5      0          0
+    // 3       4.5      0          0
+    // 4       6.5      0          0
+    // 5       0       pi/2        2.5
+    //
+    // All distances are in centimeters.
+    // --------------------------------------------------------
 
-
-  // Convert joint angles to radians
-  float th1 = deg2rad(theta1);
-  float th2 = deg2rad(theta2);
-  float th3 = deg2rad(theta3);
-  float th4 = deg2rad(theta4);
-  float th5 = deg2rad(theta5);
-
-
-  // ------------------------------------------------
-  // DH TABLE
-  // ------------------------------------------------
-
-  // Link 1
-  // r1 = 0
-  // alpha1 = pi/2
-  // d1 = d1
-  // theta1 = variable
-  DH(0, PI / 2, d1, th1, T01);
-
-  // Link 2
-  // r2 = r2
-  // alpha2 = 0
-  // d2 = 0
-  // theta2 = variable
-  DH(r2, 0, 0, th2, T12);
-
-  // Link 3
-  DH(r3, 0, 0, th3, T23);
-
-  // Link 4
-  DH(r4, 0, 0, th4, T34);
-
-  // Link 5
-  // alpha5 = pi/2
-  // d5 = d5
-  DH(r5, PI / 2, d5, th5, T45);
+    DHLink link1;
+    DHLink link2;
+    DHLink link3;
+    DHLink link4;
+    DHLink link5;
 
 
-  // ------------------------------------------------
-  // Multiply transformations
-  //
-  // T05 = T01*T12*T23*T34*T45
-  // ------------------------------------------------
+public:
 
-  matrixMultiply(T01, T12, T02);
+    // --------------------------------------------------------
+    // Constructor
+    //
+    // Initialize each DH link using the robot dimensions.
+    // --------------------------------------------------------
 
-  matrixMultiply(T02, T23, T03);
-
-  matrixMultiply(T03, T34, T04);
-
-  matrixMultiply(T04, T45, T05);
-
-
-  // ------------------------------------------------
-  // Print complete transformation
-  // ------------------------------------------------
-
-  Serial.println("T05:");
-  printMatrix(T05);
+    RobotArm()
+        : link1(0.0f,  PI / 2.0f, 11.5f),
+          link2(10.5f, 0.0f,       0.0f),
+          link3(4.5f,  0.0f,       0.0f),
+          link4(6.5f,  0.0f,       0.0f),
+          link5(0.0f,  PI / 2.0f,  2.5f)
+    {
+    }
 
 
-  // ------------------------------------------------
-  // End-effector position
-  //
-  //      [ R R R X ]
-  // T =  [ R R R Y ]
-  //      [ R R R Z ]
-  //      [ 0 0 0 1 ]
-  //
-  // ------------------------------------------------
+    // --------------------------------------------------------
+    // Set all five joint angles
+    //
+    // Inputs are in degrees.
+    // --------------------------------------------------------
 
-  float x = T05[0][3];
-  float y = T05[1][3];
-  float z = T05[2][3];
-
-  Serial.println("End Effector Position:");
-
-  Serial.print("X = ");
-  Serial.println(x, 4);
-
-  Serial.print("Y = ");
-  Serial.println(y, 4);
-
-  Serial.print("Z = ");
-  Serial.println(z, 4);
-
-  Serial.println("-------------------------");
-}
+    void setJointAngles(float theta1,
+                        float theta2,
+                        float theta3,
+                        float theta4,
+                        float theta5)
+    {
+        link1.setThetaDegrees(theta1);
+        link2.setThetaDegrees(theta2);
+        link3.setThetaDegrees(theta3);
+        link4.setThetaDegrees(theta4);
+        link5.setThetaDegrees(theta5);
+    }
 
 
-// --------------------------------------------------
-// Arduino Setup
-// --------------------------------------------------
+    // --------------------------------------------------------
+    // Calculate forward kinematics
+    //
+    // T05 = T01 * T12 * T23 * T34 * T45
+    //
+    // The resulting matrix describes the position and
+    // orientation of frame 5 relative to frame 0.
+    // --------------------------------------------------------
+
+    Matrix<4, 4> forwardKinematics() const
+    {
+        // Get each individual transformation matrix
+
+        Matrix<4, 4> T01 =
+            link1.getTransformationMatrix();
+
+        Matrix<4, 4> T12 =
+            link2.getTransformationMatrix();
+
+        Matrix<4, 4> T23 =
+            link3.getTransformationMatrix();
+
+        Matrix<4, 4> T34 =
+            link4.getTransformationMatrix();
+
+        Matrix<4, 4> T45 =
+            link5.getTransformationMatrix();
+
+
+        // Multiply all transformations
+
+        Matrix<4, 4> T05 =
+            T01 * T12 * T23 * T34 * T45;
+
+
+        return T05;
+    }
+
+
+    // --------------------------------------------------------
+    // Print the complete transformation matrix
+    // --------------------------------------------------------
+
+    void printTransformationMatrix() const
+    {
+        Matrix<4, 4> T05 =
+            forwardKinematics();
+
+
+        Serial.println("T05 = ");
+
+        for (int i = 0; i < 4; i++)
+        {
+            for (int j = 0; j < 4; j++)
+            {
+                Serial.print(T05(i, j), 4);
+                Serial.print("\t");
+            }
+
+            Serial.println();
+        }
+
+        Serial.println();
+    }
+
+
+    // --------------------------------------------------------
+    // Print the end-effector position
+    //
+    // The transformation matrix has the form:
+    //
+    //      [ R11 R12 R13  x ]
+    // T =  [ R21 R22 R23  y ]
+    //      [ R31 R32 R33  z ]
+    //      [  0   0   0   1 ]
+    //
+    // Therefore:
+    //
+    // x = T05(0,3)
+    // y = T05(1,3)
+    // z = T05(2,3)
+    //
+    // --------------------------------------------------------
+
+    void printEndEffectorPosition() const
+    {
+        Matrix<4, 4> T05 =
+            forwardKinematics();
+
+
+        float x = T05(0, 3);
+        float y = T05(1, 3);
+        float z = T05(2, 3);
+
+
+        Serial.println("End-Effector Position:");
+
+        Serial.print("X = ");
+        Serial.print(x, 4);
+        Serial.println(" cm");
+
+        Serial.print("Y = ");
+        Serial.print(y, 4);
+        Serial.println(" cm");
+
+        Serial.print("Z = ");
+        Serial.print(z, 4);
+        Serial.println(" cm");
+
+        Serial.println();
+    }
+
+
+    // --------------------------------------------------------
+    // Return X position
+    // --------------------------------------------------------
+
+    float getX() const
+    {
+        Matrix<4, 4> T05 =
+            forwardKinematics();
+
+        return T05(0, 3);
+    }
+
+
+    // --------------------------------------------------------
+    // Return Y position
+    // --------------------------------------------------------
+
+    float getY() const
+    {
+        Matrix<4, 4> T05 =
+            forwardKinematics();
+
+        return T05(1, 3);
+    }
+
+
+    // --------------------------------------------------------
+    // Return Z position
+    // --------------------------------------------------------
+
+    float getZ() const
+    {
+        Matrix<4, 4> T05 =
+            forwardKinematics();
+
+        return T05(2, 3);
+    }
+};
+
+
+// ============================================================
+// Create Robot Object
+// ============================================================
+
+RobotArm robot;
+
+
+// ============================================================
+// setup()
+//
+// Runs once when Arduino starts.
+// ============================================================
+
 void setup()
 {
-  Serial.begin(115200);
+    // Start serial communication
 
-  delay(1000);
+    Serial.begin(115200);
 
-  Serial.println("5-DOF Robot Forward Kinematics");
-  Serial.println();
 
-  forwardKinematics();
+    // --------------------------------------------------------
+    // Start I2C communication
+    // --------------------------------------------------------
+    Wire.begin();
+    // --------------------------------------------------------
+    // Initialize PCA9685 servo driver
+    // --------------------------------------------------------
+
+    pwm.begin();
+
+    pwm.setOscillatorFrequency(27000000);
+
+    pwm.setPWMFreq(SERVO_FREQ);
+
+
+    delay(1000);
+
+
+    Serial.println();
+    Serial.println("5-DOF Robot Forward Kinematics");
+    Serial.println();
+
+
+    // --------------------------------------------------------
+    // Example joint configuration
+    //
+    // Angles are given in degrees.
+    // --------------------------------------------------------
+
+    robot.setJointAngles(
+        0.0f,      // theta1
+        0.0f,      // theta2
+        0.0f,      // theta3
+        0.0f,      // theta4
+        0.0f       // theta5
+    );
+
+    // Print results
+    robot.printTransformationMatrix();
+    robot.printEndEffectorPosition();
 }
 
 
-// --------------------------------------------------
-// Arduino Loop
-// --------------------------------------------------
+// ============================================================
+// loop()
+//
+// Runs continuously after setup().
+// ============================================================
+
 void loop()
 {
-
+    // Nothing is required here yet.
 }
