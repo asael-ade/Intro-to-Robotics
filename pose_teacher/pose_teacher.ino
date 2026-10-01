@@ -16,7 +16,7 @@ const uint16_t DEFAULT_DWELL = 300;  // ms pause written into each waypoint
 
 /* Channel map as actually wired. */
 const char *JOINT_NAME[NUM_JOINTS] = {
-  "wristRot", "wristPitch", "gripper", "elbow", "shoulder", "base"
+  "wristRot", "wristPitch", "gripper", "elbow", "2", "base"
 };
 
 /* From Phase 2. Re-run the limit finder if you rewire anything. */
