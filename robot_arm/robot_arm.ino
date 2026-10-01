@@ -1,10 +1,13 @@
-// 5-DOF robot arm + claw on a PCA9685, with synchronized trapezoidal moves.
+// 5-DOF robot arm + claw on a PCA9685, with synchronized trapezoidal moves,
+// inverse kinematics, and serial-terminal commands (type "?" for help).
 // Units: degrees, cm, seconds.
 
 #include <Wire.h>
 #include <Adafruit_PWMServoDriver.h>
 #include <BasicLinearAlgebra.h>
 #include <math.h>
+#include <string.h>
+#include <stdlib.h>
 
 using namespace BLA;
 
@@ -27,15 +30,27 @@ struct JointConfig {
 
 const JointConfig JOINTS[NUM_JOINTS] = {
 //   ch    min    max    offset rev   minP maxP  vel acc
-    { 0,  -90,    90,    90,   false, 120, 500,  60, 120 },
-    { 1,    0,   135,    20,   false, 120, 500,  45,  80 },
-    { 3,  -90,    90,    90,    true, 120, 500,  60, 120 },
-    { 3,  -90,    90,    90,   false, 120, 500,  90, 180 },
-    { 4,  -90,    90,    90,   false, 120, 500,  90, 180 },
+    { 6,  -90,    90,     0,   false, 120, 500,  60, 120 },  // J1 base
+    { 7,    0,   135,    10,   false, 120, 500,  45,  80 },  // J2 shoulder
+    { 2,  -90,   120,    45,    true, 120, 500,  60, 120 },  // J3 elbow
+    { 4,  -90,    90,    90,   false, 120, 500,  90, 180 },  // J4 wrist pitch
+    { 3,  -90,    90,    90,   false, 120, 500,  90, 180 },  // J5 wrist roll
 };
 
+// Usable joint limits: the configured limits, narrowed to what the servo's
+// 0-180 deg travel can actually reach (servo = offset +/- joint angle).
+// Everything (moves, IK, FK) uses these, so the stored pose always matches
+// what was sent to the servos.
+float jointMin(int i) {
+    const JointConfig& c = JOINTS[i];
+    return max(c.minAngle, c.reversed ? c.offset - 180 : 0 - c.offset);
+}
+float jointMax(int i) {
+    const JointConfig& c = JOINTS[i];
+    return min(c.maxAngle, c.reversed ? c.offset : 180 - c.offset);
+}
+
 // Claw: channel, open angle, closed angle, min pulse, max pulse
-// NOTE: channel 5 is also used by joint 1 - set to the claw's real channel.
 const int   CLAW_CHANNEL = 5;
 const float CLAW_OPEN = 90, CLAW_CLOSED = 20;
 const int   CLAW_MIN_PULSE = 120, CLAW_MAX_PULSE = 500;
@@ -44,12 +59,12 @@ const int   CLAW_MIN_PULSE = 120, CLAW_MAX_PULSE = 500;
 const float DH[NUM_JOINTS][3] = {
     {  0.0f, PI / 2, 11.5f },
     { 10.5f, 0,       0.0f },
-    {  9.5f, 0,       0.0f },
-    {   0.0, PI / 2,  0.0f },
-    {  0.0f, 0,       9.0f },
+    { 10.0f, 0,       0.0f },
+    {  0.0f, PI / 2,  0.0f },
+    {  0.0f, 0,      15.0f },
 };
 
-const float HOME[NUM_JOINTS] = { 0, 90, 0, -10, -10 };
+const float HOME[NUM_JOINTS] = { 0, 90, 40, 0, 0 };
 
 Adafruit_PWMServoDriver pwm;
 
@@ -131,7 +146,7 @@ public:
 
         for (int i = 0; i < NUM_JOINTS; i++) {
             start[i]  = angle[i];
-            target_[i] = constrain(target[i], JOINTS[i].minAngle, JOINTS[i].maxAngle);
+            target_[i] = constrain(target[i], jointMin(i), jointMax(i));
             float D = fabs(target_[i] - start[i]);
             if (D > 0.05f) {
                 v = min(v, JOINTS[i].maxVel / D);
@@ -139,13 +154,16 @@ public:
             }
         }
 
-        if (isinf(v)) return;                   // already there
+        if (isinf(v)) { moving = false; return; }   // already there
 
         profile.plan(v, a);
         startUs = micros();
         lastUs  = startUs - UPDATE_PERIOD_US;   // first step immediately
         moving  = true;
     }
+
+    // Halt immediately; the arm holds its last commanded pose.
+    void stop() { moving = false; }
 
     // Call every loop(); steps the move once per UPDATE_PERIOD_US.
     void update() {
@@ -167,8 +185,9 @@ public:
 
     // Analytic inverse kinematics.
     //   x, y, z : tool position in the base frame [cm]
-    //   pitch   : theta2 + theta3 + theta4 = angle of link 4's x-axis above
-    //             horizontal, in the arm's vertical plane [deg]
+    //   pitch   : theta2 + theta3 + theta4 [deg]. With the DH table above the
+    //             gripper points (pitch - 90) deg from horizontal:
+    //             pitch 0 = straight down, pitch 90 = straight out.
     //   roll    : theta5 [deg]
     // Writes joint angles to q. Returns false if the target is out of reach or
     // violates a joint limit. Of the two elbow solutions, picks the valid one
@@ -214,8 +233,8 @@ public:
             bool ok = true;
             float cost = 0;                     // distance from current pose
             for (int i = 0; i < NUM_JOINTS; i++) {
-                if (cand[i] < JOINTS[i].minAngle - 0.01f ||
-                    cand[i] > JOINTS[i].maxAngle + 0.01f) ok = false;
+                if (cand[i] < jointMin(i) - 0.01f ||
+                    cand[i] > jointMax(i) + 0.01f) ok = false;
                 cost += fabs(cand[i] - angle[i]);
             }
 
@@ -241,7 +260,12 @@ public:
 
     // T05 = A1 * A2 * A3 * A4 * A5 (standard DH)
     Matrix<4, 4> forwardKinematics() const {
-        Matrix<4, 4> T = Identity<4, 4>();
+        Matrix<4, 4> T = {          // identity
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            0, 0, 0, 1
+        };
         for (int i = 0; i < NUM_JOINTS; i++) {
             float th = angle[i] * DEG_TO_RAD;
             float r = DH[i][0], al = DH[i][1], d = DH[i][2];
@@ -264,7 +288,9 @@ public:
         Serial.print(" | XYZ = ");
         Serial.print(T(0, 3)); Serial.print(", ");
         Serial.print(T(1, 3)); Serial.print(", ");
-        Serial.print(T(2, 3)); Serial.println(" cm");
+        Serial.print(T(2, 3));
+        Serial.print(" cm | pitch = ");
+        Serial.println(angle[1] + angle[2] + angle[3]);
     }
 
 private:
@@ -279,7 +305,7 @@ private:
     void apply(const float q[NUM_JOINTS]) {
         for (int i = 0; i < NUM_JOINTS; i++) {
             const JointConfig& c = JOINTS[i];
-            angle[i] = constrain(q[i], c.minAngle, c.maxAngle);
+            angle[i] = constrain(q[i], jointMin(i), jointMax(i));
             float servo = c.reversed ? c.offset - angle[i] : c.offset + angle[i];
             writeServo(c.channel, servo, c.minPulse, c.maxPulse);
         }
@@ -288,6 +314,7 @@ private:
 
 // ============================================================
 // Waypoint sequence (Cartesian targets, solved with IK)
+// Started with the "run" command.
 // ============================================================
 
 enum ClawAction { NONE, OPEN, CLOSE };
@@ -299,22 +326,23 @@ struct Waypoint {
     unsigned long dwellMs;      // pause after arrival
 };
 
+// Gripper pointing straight down (pitch 0) for pick and place.
+// All points are reachable with the limits above (J1 only turns 0..90,
+// so both sides are at positive y). Replace with your own positions.
 const Waypoint WAYPOINTS[] = {
 //     x     y     z    pitch roll   claw   dwell
-    {  3.6,  0.0, 32.4,  80, -10,  OPEN,  1000 },  // home
-    {  8.5,  4.9, 30.4,  70,   0,  NONE,   500 },  // above object
-    { 11.1,  6.4, 27.8,  60,   0,  CLOSE,  800 },  // grasp
-    {  6.2,  3.6, 31.8,  80,   0,  NONE,   300 },  // lift
-    {  6.2, -3.6, 31.8,  80,   0,  NONE,   300 },  // carry
-    { 10.2, -5.9, 28.9,  65,   0,  OPEN,   800 },  // release
+    { 14,    6,    9,    0,   0,  OPEN,   500 },  // above object
+    { 14,    6,    3,    0,   0,  CLOSE,  800 },  // grasp
+    { 14,    6,    9,    0,   0,  NONE,   300 },  // lift
+    {  6,   14,    9,    0,   0,  NONE,   300 },  // carry
+    {  6,   14,    3,    0,   0,  OPEN,   800 },  // release
+    {  6,   14,    9,    0,   0,  NONE,   300 },  // retreat
 };
 const int NUM_WAYPOINTS = sizeof(WAYPOINTS) / sizeof(WAYPOINTS[0]);
 
-// ============================================================
-// Main
-// ============================================================
-
 RobotArm robot;
+
+bool runSequence = false;       // true while the waypoint sequence runs
 int wp = 0;
 bool arrived = false;
 unsigned long arrivedMs = 0;
@@ -332,25 +360,8 @@ void startWaypoint() {
     }
 }
 
-void setup() {
-    Serial.begin(115200);
-    Wire.begin();
-    pwm.begin();
-    pwm.setOscillatorFrequency(27000000);
-    pwm.setPWMFreq(SERVO_FREQ);
-    delay(1000);
-
-    robot.openClaw();
-    robot.setJointAngles(HOME);
-    delay(1500);
-    robot.printState();
-
-    startWaypoint();
-}
-
 // move -> arrive (claw action) -> dwell -> next waypoint
-void loop() {
-    robot.update();
+void sequenceStep() {
     if (robot.isMoving()) return;
 
     if (!arrived) {
@@ -364,6 +375,165 @@ void loop() {
 
     if (millis() - arrivedMs < WAYPOINTS[wp].dwellMs) return;
 
-    wp = (wp + 1) % NUM_WAYPOINTS;
+    if (++wp >= NUM_WAYPOINTS) {            // one pass per "run"
+        runSequence = false;
+        Serial.println(F("Sequence complete"));
+        return;
+    }
     startWaypoint();
+}
+
+// ============================================================
+// Serial commands (115200 baud, newline-terminated)
+//
+//   j q1 q2 q3 q4 q5        move to joint angles [deg]
+//   p x y z pitch roll      move to pose via IK [cm, deg]
+//   h                       move to HOME
+//   o / c                   open / close claw
+//   s                       print state
+//   run                     start waypoint sequence
+//   x                       stop motion and sequence
+//   t ch angle              raw servo test: one channel, 0-180 deg
+//   ?                       help
+//
+// Move commands are refused while the arm is moving (send x first),
+// and stop a running sequence.
+// ============================================================
+
+// Read up to n numbers following the command word. Returns how many were
+// read, or -1 if a token is not a valid finite number (so "j a b c d e" is
+// rejected instead of being read as zeros).
+int readNumbers(float* out, int n) {
+    int k = 0;
+    char* tok;
+    while (k < n && (tok = strtok(NULL, " ,")) != NULL) {
+        char* end;
+        float val = strtod(tok, &end);
+        if (end == tok || *end != '\0' || !isfinite(val)) return -1;
+        out[k++] = val;
+    }
+    return k;
+}
+
+// Motion commands are refused mid-move: restarting a profile from rest
+// while the arm is moving would cause a jerk.
+bool busy() {
+    if (!robot.isMoving()) return false;
+    Serial.println(F("busy - wait, or send x to stop"));
+    return true;
+}
+
+void printHelp() {
+    Serial.println(F("j q1 q2 q3 q4 q5    joint move [deg]"));
+    Serial.println(F("p x y z pitch roll  pose move [cm, deg]; pitch 0 = down, 90 = out"));
+    Serial.println(F("h                   home"));
+    Serial.println(F("o / c               open / close claw"));
+    Serial.println(F("s                   state"));
+    Serial.println(F("run                 start waypoint sequence"));
+    Serial.println(F("x                   stop"));
+    Serial.println(F("t ch angle          raw servo test (0-180 deg on one channel)"));
+}
+
+void handleCommand(char* line) {
+    char* cmd = strtok(line, " ,");
+    if (cmd == NULL) return;
+
+    float v[NUM_JOINTS];
+
+    if (!strcmp(cmd, "j")) {
+        if (readNumbers(v, 5) < 5) { Serial.println(F("usage: j q1 q2 q3 q4 q5")); return; }
+        if (busy()) return;
+        runSequence = false;
+        robot.moveTo(v);
+    }
+    else if (!strcmp(cmd, "p")) {
+        if (readNumbers(v, 5) < 5) { Serial.println(F("usage: p x y z pitch roll")); return; }
+        if (busy()) return;
+        runSequence = false;
+        if (!robot.moveToPose(v[0], v[1], v[2], v[3], v[4]))
+            Serial.println(F("unreachable"));
+    }
+    else if (!strcmp(cmd, "h"))   { if (busy()) return; runSequence = false; robot.moveTo(HOME); }
+    else if (!strcmp(cmd, "o"))   robot.openClaw();
+    else if (!strcmp(cmd, "c"))   robot.closeClaw();
+    else if (!strcmp(cmd, "s"))   robot.printState();
+    else if (!strcmp(cmd, "run")) { if (busy()) return; runSequence = true; wp = 0; startWaypoint(); }
+    else if (!strcmp(cmd, "x"))   { runSequence = false; robot.stop(); Serial.println(F("stopped")); }
+    else if (!strcmp(cmd, "t")) {     // raw servo test, bypasses joint config
+        if (readNumbers(v, 2) < 2 || v[0] < 0 || v[0] > 15) {
+            Serial.println(F("usage: t channel(0-15) servoAngle(0-180)"));
+            return;
+        }
+        runSequence = false;
+        robot.stop();
+        writeServo((int)v[0], v[1], 120, 500);
+        Serial.println(F("pose no longer tracked - send h before j/p"));
+    }
+    else if (!strcmp(cmd, "?"))   printHelp();
+    else Serial.println(F("unknown command, type ? for help"));
+}
+
+// Collect characters into a line without blocking; run it on newline.
+void readSerial() {
+    static char line[64];
+    static int len = 0;
+    static bool tooLong = false;
+
+    while (Serial.available()) {
+        char ch = Serial.read();
+        if (ch == '\n' || ch == '\r') {
+            if (tooLong) Serial.println(F("line too long - ignored"));
+            else if (len > 0) {
+                line[len] = '\0';
+                handleCommand(line);
+            }
+            len = 0;
+            tooLong = false;
+        } else if (len < (int)sizeof(line) - 1) {
+            line[len++] = ch;
+        } else {
+            tooLong = true;
+        }
+    }
+}
+
+// ============================================================
+// Main
+// ============================================================
+
+void setup() {
+    Serial.begin(115200);
+    Wire.begin();
+    pwm.begin();
+    pwm.setOscillatorFrequency(27000000);
+    pwm.setPWMFreq(SERVO_FREQ);
+    delay(1000);
+
+    // Warn if a joint's configured limits exceed what its servo can reach.
+    for (int i = 0; i < NUM_JOINTS; i++) {
+        if (jointMin(i) > JOINTS[i].minAngle || jointMax(i) < JOINTS[i].maxAngle) {
+            Serial.print(F("WARNING: J")); Serial.print(i + 1);
+            Serial.print(F(" limits narrowed to ")); Serial.print(jointMin(i));
+            Serial.print(F(" .. ")); Serial.print(jointMax(i));
+            Serial.println(F(" (servo range) - check offset/limits"));
+        }
+    }
+
+    robot.openClaw();
+    robot.setJointAngles(HOME);
+    delay(1500);
+    robot.printState();
+    Serial.println(F("Ready. Type ? for commands."));
+}
+
+void loop() {
+    static bool wasMoving = false;
+
+    readSerial();
+    robot.update();
+
+    if (runSequence) sequenceStep();
+    else if (wasMoving && !robot.isMoving()) robot.printState();   // manual move done
+
+    wasMoving = robot.isMoving();
 }
