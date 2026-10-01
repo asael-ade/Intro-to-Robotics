@@ -5,21 +5,13 @@
 
 using namespace BLA;
 
-
-// ============================================================
 // PCA9685 Servo Driver
-// ============================================================
-
 Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
 
-
-// ============================================================
 // General Constants
-// ============================================================
 
 // Standard servo frequency for MG996R
 const int SERVO_FREQ = 50;
-
 
 // ============================================================
 // ServoJoint Class
@@ -34,10 +26,8 @@ const int SERVO_FREQ = 50;
 // - PWM limits
 // ============================================================
 
-class ServoJoint
-{
+class ServoJoint{
 private:
-
     int channel;
 
     float minJointAngle;
@@ -52,12 +42,8 @@ private:
 
     float currentJointAngle;
 
-
 public:
-
-    // --------------------------------------------------------
     // Constructor
-    // --------------------------------------------------------
 
     ServoJoint(int pwmChannel,
                float minAngle,
@@ -65,8 +51,7 @@ public:
                float offset,
                bool reverseDirection,
                int minimumPulse,
-               int maximumPulse)
-    {
+               int maximumPulse) {
         channel = pwmChannel;
 
         minJointAngle = minAngle;
@@ -82,94 +67,47 @@ public:
         currentJointAngle = 0.0f;
     }
 
-
-    // --------------------------------------------------------
     // Convert robot joint angle to servo angle
-    // --------------------------------------------------------
-
-    float jointToServoAngle(float jointAngle) const
-    {
-        if (reversed)
-        {
+    float jointToServoAngle(float jointAngle) const {
+        if (reversed) {
             return servoOffset - jointAngle;
         }
 
         return servoOffset + jointAngle;
     }
 
-
-    // --------------------------------------------------------
     // Convert servo angle to PCA9685 pulse
-    // --------------------------------------------------------
-
-    int servoAngleToPulse(float servoAngle) const
-    {
+    int servoAngleToPulse(float servoAngle) const {
         // Keep servo command inside 0 to 180 degrees
-        servoAngle = constrain(
-            servoAngle,
-            0.0f,
-            180.0f
-        );
-
+        servoAngle = constrain(servoAngle, 0.0f, 180.0f);
 
         // Convert 0-180 degrees into PCA9685 pulse count
-        int pulse = map(
-            (int)servoAngle,
-            0,
-            180,
-            minPulse,
-            maxPulse
-        );
-
+        int pulse = map((int)servoAngle, 0, 180, minPulse, maxPulse);
 
         return pulse;
     }
 
-
-    // --------------------------------------------------------
     // Move physical joint
-    // --------------------------------------------------------
-
-    void setAngle(float jointAngle)
-    {
+    void setAngle(float jointAngle) {
         // Apply physical joint limits
-        jointAngle = constrain(
-            jointAngle,
-            minJointAngle,
-            maxJointAngle
-        );
-
+        jointAngle = constrain(jointAngle, minJointAngle, maxJointAngle);
 
         currentJointAngle = jointAngle;
 
-
         // Convert robot angle into actual servo angle
-        float servoAngle =
-            jointToServoAngle(jointAngle);
-
+        float servoAngle = jointToServoAngle(jointAngle);
 
         // Convert servo angle into PWM value
-        int pulse =
-            servoAngleToPulse(servoAngle);
-
+        int pulse = servoAngleToPulse(servoAngle);
 
         // Send PWM command
-        pwm.setPWM(
-            channel,
-            0,
-            pulse
-        );
+        pwm.setPWM(channel, 0, pulse);
     }
 
 
     // --------------------------------------------------------
     // Return current angle
-    // --------------------------------------------------------
-
-    float getAngle() const
-    {
-        return currentJointAngle;
-    }
+    float getAngle() const { return currentJointAngle;}
 
 
     // --------------------------------------------------------
