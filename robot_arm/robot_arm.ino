@@ -30,11 +30,11 @@ struct JointConfig {
 
 const JointConfig JOINTS[NUM_JOINTS] = {
 //   ch    min    max    offset rev   minP maxP  vel acc
-    { 6,  -90,    90,     0,   false, 120, 500,  60, 120 },  // J1 base
-    { 7,    0,   135,    10,   false, 120, 500,  45,  80 },  // J2 shoulder
-    { 2,  -90,   120,    45,    true, 120, 500,  60, 120 },  // J3 elbow
-    { 4,  -90,    90,    90,   false, 120, 500,  90, 180 },  // J4 wrist pitch
-    { 3,  -90,    90,    90,   false, 120, 500,  90, 180 },  // J5 wrist roll
+    { 0,  -90,    75,   103,   false, 120, 500,  60, 120 },  // J1 base
+    { 1,    0,   135,    10,   false, 120, 500,  45,  80 },  // J2 shoulder
+    { 2,  -95,    75,    80,    true, 120, 500,  60, 120 },  // J3 elbow
+    { 3,  -15,   155,    20,   false, 120, 500,  90, 180 },  // J4 wrist pitch
+    { 4,  -90,    85,    95,   false, 120, 500,  90, 180 },  // J5 wrist roll
 };
 
 // Usable joint limits: the configured limits, narrowed to what the servo's
@@ -52,7 +52,7 @@ float jointMax(int i) {
 
 // Claw: channel, open angle, closed angle, min pulse, max pulse
 const int   CLAW_CHANNEL = 5;
-const float CLAW_OPEN = 90, CLAW_CLOSED = 20;
+const float CLAW_OPEN = 20, CLAW_CLOSED = 90;
 const int   CLAW_MIN_PULSE = 120, CLAW_MAX_PULSE = 500;
 
 // DH table: r, alpha (rad), d
@@ -64,7 +64,7 @@ const float DH[NUM_JOINTS][3] = {
     {  0.0f, 0,      15.0f },
 };
 
-const float HOME[NUM_JOINTS] = { 0, 90, 40, 0, 0 };
+const float HOME[NUM_JOINTS] = { 0, 90, -90, 90, 0 };
 
 Adafruit_PWMServoDriver pwm;
 
