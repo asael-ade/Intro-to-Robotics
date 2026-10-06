@@ -30,10 +30,10 @@ struct JointConfig {
 
 const JointConfig JOINTS[NUM_JOINTS] = {
 //   ch    min    max    offset rev   minP maxP  vel acc
-    { 0,  -90,    75,   103,   false, 120, 500,  60, 120 },  // J1 base
+    { 0,  -90,    90,   103,   false, 120, 500,  60, 120 },  // J1 base
     { 1,    0,   135,    10,   false, 120, 500,  45,  80 },  // J2 shoulder
-    { 2,  -95,    75,    80,    true, 120, 500,  60, 120 },  // J3 elbow
-    { 3,  -15,   155,    20,   false, 120, 500,  90, 180 },  // J4 wrist pitch
+    { 2,  -110,    70,    80,    true, 120, 500,  60, 120 },  // J3 elbow
+    { 3,   25,   175,   200,    true, 120, 500,  90, 180 },  // J4 wrist pitch
     { 4,  -90,    85,    95,   false, 120, 500,  90, 180 },  // J5 wrist roll
 };
 
@@ -331,12 +331,12 @@ struct Waypoint {
 // so both sides are at positive y). Replace with your own positions.
 const Waypoint WAYPOINTS[] = {
 //     x     y     z    pitch roll   claw   dwell
-    { 14,    6,    9,    0,   0,  OPEN,   500 },  // above object
-    { 14,    6,    3,    0,   0,  CLOSE,  800 },  // grasp
-    { 14,    6,    9,    0,   0,  NONE,   300 },  // lift
-    {  6,   14,    9,    0,   0,  NONE,   300 },  // carry
-    {  6,   14,    3,    0,   0,  OPEN,   800 },  // release
-    {  6,   14,    9,    0,   0,  NONE,   300 },  // retreat
+    { 18,    6,    6,   20,   0,  OPEN,   500 },  // above object
+    { 18,    6,    2,   20,   0,  CLOSE,  800 },  // grasp
+    { 18,    6,    6,   20,   0,  NONE,   300 },  // lift
+    { 18,   -6,    6,   20,   0,  NONE,   300 },  // carry
+    { 18,   -6,    2,   20,   0,  OPEN,   800 },  // release
+    { 18,   -6,    6,   20,   0,  NONE,   300 },  // retreat
 };
 const int NUM_WAYPOINTS = sizeof(WAYPOINTS) / sizeof(WAYPOINTS[0]);
 
@@ -353,10 +353,10 @@ void startWaypoint() {
     const Waypoint& w = WAYPOINTS[wp];
     arrived = !robot.moveToPose(w.x, w.y, w.z, w.pitch, w.roll);
     if (arrived) {
-        arrivedMs = millis();
-        Serial.print("Waypoint ");
+        runSequence = false;
+        Serial.print(F("Waypoint "));
         Serial.print(wp);
-        Serial.println(" unreachable - skipped");
+        Serial.println(F(" unreachable - sequence stopped"));
     }
 }
 
