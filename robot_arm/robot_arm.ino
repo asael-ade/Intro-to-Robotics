@@ -19,6 +19,29 @@ const int SERVO_FREQ = 50;                  // Hz
 const unsigned long UPDATE_PERIOD_US = 20000;  // one servo frame
 const int NUM_JOINTS = 5;
 
+// Types used by functions further down. They are defined up here because
+// the Arduino IDE inserts declarations of all functions near the top of the
+// sketch, and those declarations need these types to already exist.
+const int MAX_SOLUTIONS = 6;
+
+// One IK solution for a grasp: the joint angles at the block and directly
+// above it, both with the same branch and gripper pitch.
+struct GraspSolution {
+    int   branch;
+    float pitch;
+    float qGrip[NUM_JOINTS];
+    float qAbove[NUM_JOINTS];
+};
+
+// Motion plan: list of joint-space moves, each with a claw action on arrival.
+enum ClawAction { NONE, OPEN, CLOSE };
+
+struct Step {
+    float q[NUM_JOINTS];
+    ClawAction claw;            // done on arrival
+    unsigned long dwellMs;      // pause after arrival
+};
+
 struct JointConfig {
     int   channel;
     float minAngle, maxAngle;   // joint limits
@@ -32,7 +55,7 @@ struct JointConfig {
 const float SERVO_RANGE = 225;
 
 // Offsets are calibrated from the home pose (upper arm vertical, forearm and
-// gripper pointing forward = joint angles 0, 90, -90, 90, 0), which sits at
+// gripper pointing forward = joint angles 0, 90, -90, 0, 0), which sits at
 // servo angles 128.75, 125, 212.5, 137.5, 118.75 (on the 0-225 scale):
 //   offset = servo - joint angle   (reversed: servo + joint angle)
 // min/max are the joints' physical ranges; where a servo cannot cover its
@@ -42,7 +65,7 @@ const JointConfig JOINTS[NUM_JOINTS] = {
     { 0,  -90,    90,  128.75,  false, 120, 500,  60, 120 },  // J1 base
     { 1,    0,   220,   35,     false, 120, 500,  45,  80 },  // J2 shoulder
     { 2, -120,    90,  122.5,   true,  120, 500,  60, 120 },  // J3 elbow
-    { 3, -100,   120,  227.5,   true,  120, 500,  90, 180 },  // J4 wrist pitch
+    { 3, -100,   120,  137.5,   true,  120, 500,  90, 180 },  // J4 wrist pitch
     { 4,  -90,    85,  118.75,  false, 120, 500,  90, 180 },  // J5 wrist roll
 };
 
@@ -64,17 +87,18 @@ const int   CLAW_CHANNEL = 5;
 const float CLAW_OPEN = 25, CLAW_CLOSED = 112.5;
 const int   CLAW_MIN_PULSE = 120, CLAW_MAX_PULSE = 500;
 
-// DH table: r, alpha (rad), d
-const float DH[NUM_JOINTS][3] = {
-    {  0.0f, PI / 2, 11.5f },
-    { 10.5f, 0,       0.0f },
-    { 10.0f, 0,       0.0f },
-    {  0.0f, PI / 2,  0.0f },
-    {  0.0f, 0,      15.0f },
+// DH table: r, alpha (rad), d, theta offset (deg).
+// The DH angle of each joint is (joint angle + theta offset). J4's offset of
+// 90 makes theta4 = 0 when the gripper is in line with the forearm.
+const float DH[NUM_JOINTS][4] = {
+    {  0.0f, PI / 2, 11.0f,  0 },
+    { 10.4f, 0,       0.0f,  0 },
+    { 9.9f, 0,       0.0f,  0 },
+    {  0.0f, PI / 2,  0.0f, 90 },
+    {  0.0f, 0,      16.8f,  0 },
 };
 
-// Home: servo angles 103, 100, 170, 110, 95 on channels 0-4.
-const float HOME[NUM_JOINTS] = { 0, 90, -90, 90, 0 };
+const float HOME[NUM_JOINTS] = { 0, 90, -90, 0, 0 };
 
 Adafruit_PWMServoDriver pwm;
 
@@ -197,9 +221,9 @@ public:
 
     // Analytic inverse kinematics for one solution branch.
     //   x, y, z : tool position in the base frame [cm]
-    //   pitch   : theta2 + theta3 + theta4 [deg]. With the DH table above the
-    //             gripper points (pitch - 90) deg from horizontal:
-    //             pitch 0 = straight down, pitch 90 = straight out.
+    //   pitch   : theta2 + theta3 + theta4 [deg] = gripper angle from
+    //             horizontal: 0 = straight out, -90 = straight down,
+    //             90 = straight up.
     //   roll    : theta5 [deg]
     //   branch  : bit 0 set = base turns away from the target and the arm
     //             reaches back over the top; bit 1 = elbow sign.
@@ -219,7 +243,8 @@ public:
         // Joints 2-4 now form a planar chain (u = radial, v = height above
         // joint 2). Remove the fixed link-4 + tool offset to get the joint-4
         // position: offset = a4 * x4 + d5 * z4, with x4 = (c, s), z4 = (s, -c).
-        float phi = pitch * DEG_TO_RAD;
+        // phi = sum of the DH angles of joints 2-4 (joint angles + offsets).
+        float phi = (pitch + DH[1][3] + DH[2][3] + DH[3][3]) * DEG_TO_RAD;
         float uw = u - (a4 * cos(phi) + d5 * sin(phi));
         float vw = (z - d1) - (a4 * sin(phi) - d5 * cos(phi));
 
@@ -232,8 +257,8 @@ public:
         float t2 = atan2(vw, uw) - atan2(a3 * sin(t3), a2 + a3 * cos(t3));
 
         q[0] = q1;
-        q[1] = wrapFrom(t2 * RAD_TO_DEG, jointMin(1));
-        q[2] = wrapFrom(t3 * RAD_TO_DEG, jointMin(2));
+        q[1] = wrapFrom(t2 * RAD_TO_DEG - DH[1][3], jointMin(1));
+        q[2] = wrapFrom(t3 * RAD_TO_DEG - DH[2][3], jointMin(2));
         q[3] = wrapFrom(pitch - q[1] - q[2], jointMin(3));
         q[4] = roll;
 
@@ -279,7 +304,7 @@ public:
             0, 0, 0, 1
         };
         for (int i = 0; i < NUM_JOINTS; i++) {
-            float th = angle[i] * DEG_TO_RAD;
+            float th = (angle[i] + DH[i][3]) * DEG_TO_RAD;
             float r = DH[i][0], al = DH[i][1], d = DH[i][2];
             float ct = cos(th), st = sin(th), ca = cos(al), sa = sin(al);
             Matrix<4, 4> A = {
@@ -341,27 +366,18 @@ RobotArm robot;
 const float BASE_X = 0, BASE_Y = 0;     // base axis in typed coordinates [cm]
 const float BLOCK_SIZE = 2.5;           // block edge length [cm]
 const float GRIP_Z = BLOCK_SIZE / 2;    // tool point height above block bottom
-const float CLEARANCE = 4;              // approach height above the grip [cm]
+const float CLEARANCE = 3;              // approach height above the grip [cm]
 const float PLACE_X = 5, PLACE_Y = 5, PLACE_Z = 0;  // drop-off (paper coords)
 const int   MAX_STACK = 3;              // tower height at the drop-off
+const float DOWN = -90;                 // pitch of a gripper pointing straight down
 const float MAX_TILT = 60;              // gripper may tilt this far from vertical
 const float TILT_STEP = 5;              // pitch search step [deg]
 const float TILT_SPACING = 15;          // min pitch gap between listed solutions
-const int   MAX_SOLUTIONS = 6;
-
-// One IK solution for a grasp: the joint angles at the block and directly
-// above it, both with the same branch and gripper pitch.
-struct GraspSolution {
-    int   branch;
-    float pitch;
-    float qGrip[NUM_JOINTS];
-    float qAbove[NUM_JOINTS];
-};
 
 // Solutions for a block at paper position (px, py, pz). The arm has one
 // more joint than a position needs, so besides the branch (base direction,
-// elbow up/down) the gripper pitch is free. For each branch, pitches from
-// -MAX_TILT to +MAX_TILT are tried; one that reaches both the grip point and
+// elbow up/down) the gripper pitch is free. For each branch, pitches within
+// MAX_TILT of straight down are tried; one that reaches both the grip point and
 // the point CLEARANCE above it is a solution, and further solutions in the
 // same branch are kept if they differ by at least TILT_SPACING.
 int findGraspSolutions(float px, float py, float pz, GraspSolution sol[MAX_SOLUTIONS]) {
@@ -370,7 +386,7 @@ int findGraspSolutions(float px, float py, float pz, GraspSolution sol[MAX_SOLUT
     int n = 0;
     for (int b = 0; b < 4; b++) {
         float last = -1000;
-        for (float pitch = -MAX_TILT; pitch <= MAX_TILT && n < MAX_SOLUTIONS; pitch += TILT_STEP) {
+        for (float pitch = DOWN - MAX_TILT; pitch <= DOWN + MAX_TILT && n < MAX_SOLUTIONS; pitch += TILT_STEP) {
             if (pitch - last < TILT_SPACING) continue;
             GraspSolution& s = sol[n];
             if (robot.solveBranch(x, y, z, pitch, 0, b, s.qGrip) &&
@@ -385,11 +401,11 @@ int findGraspSolutions(float px, float py, float pz, GraspSolution sol[MAX_SOLUT
     return n;
 }
 
-// The single best solution (gripper closest to vertical), for the drop-off.
+// The single best solution (gripper closest to straight down), for the drop-off.
 bool findBestGrasp(float px, float py, float pz, GraspSolution& best) {
     float x = px - BASE_X, y = py - BASE_Y, z = pz + GRIP_Z;
     for (int k = 0; k <= 2 * (int)(MAX_TILT / TILT_STEP); k++) {
-        float pitch = ((k + 1) / 2) * TILT_STEP * ((k % 2) ? 1 : -1);  // 0, 5, -5, ...
+        float pitch = DOWN + ((k + 1) / 2) * TILT_STEP * ((k % 2) ? 1 : -1);  // -90, -85, -95, ...
         for (int b = 0; b < 4; b++) {
             if (robot.solveBranch(x, y, z, pitch, 0, b, best.qGrip) &&
                 robot.solveBranch(x, y, z + CLEARANCE, pitch, 0, b, best.qAbove)) {
@@ -414,15 +430,6 @@ void printSolution(int k, const GraspSolution& s) {
     for (int i = 0; i < NUM_JOINTS; i++) { Serial.print(' '); Serial.print(s.qGrip[i], 1); }
     Serial.println();
 }
-
-// Motion plan: list of joint-space moves, each with a claw action on arrival.
-enum ClawAction { NONE, OPEN, CLOSE };
-
-struct Step {
-    float q[NUM_JOINTS];
-    ClawAction claw;            // done on arrival
-    unsigned long dwellMs;      // pause after arrival
-};
 
 const int MAX_STEPS = 8;
 Step steps[MAX_STEPS];
@@ -566,7 +573,7 @@ bool busy() {
 
 void printHelp() {
     Serial.println(F("j q1 q2 q3 q4 q5    joint move [deg]"));
-    Serial.println(F("p x y z pitch roll  pose move [cm, deg]; pitch 0 = down, 90 = out"));
+    Serial.println(F("p x y z pitch roll  pose move [cm, deg]; pitch 0 = out, -90 = down"));
     Serial.println(F("h                   home"));
     Serial.println(F("o / c               open / close claw"));
     Serial.println(F("s                   state"));
