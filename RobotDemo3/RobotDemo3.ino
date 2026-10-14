@@ -43,23 +43,23 @@
 //    d5 = distance from the wrist-pitch axis to the point between the finger
 //    pads where the block is held. Measure yours and adjust.
 // ============================================================================
-const ik::ArmGeom ARM = { 115.0f, 104.0f, 99.0f, 168.0f };   // d1, r2, r3, d5
+const ik::ArmGeom ARM = { 110.0f, 104.0f, 99.0f, 168.0f };   // d1, r2, r3, d5
 
 // ============================================================================
 // 2. WORKSPACE / TASK
 // ============================================================================
 const float BASE_X_CM      = 0.0f;  // where the base axis z0 hits the graph paper (cm)
-const float BASE_Y_CM      = 0.0f;
+const float BASE_Y_CM      = -1.1f;
 const float BASE_YAW_DEG   = 0.0f;  // angle of the robot's x0 from the paper's +x axis
 const float BASE_HEIGHT_MM = 0.0f;  // height of the frame-0 origin above the paper
                                     // (d1 must be measured from that same origin)
 
-const float BLOCK_MM       = 30.0f; // block edge length
-const float GRASP_MM       = 17.0f; // grip height above the block's bottom face
-const float PLACE_X_CM     = 10.0f, PLACE_Y_CM = 10.0f, PLACE_Z_CM = 1.0f;  // drop-off in cm
-const float RELEASE_GAP_MM = 4.0f;  // let go this far above the resting height
+const float BLOCK_MM       = 25.0f; // block edge length
+const float GRASP_MM       = 15.0f; // grip height above the block's bottom face
+const float PLACE_X_CM     = 10.0f, PLACE_Y_CM = 8.0f, PLACE_Z_CM = 0.2f;  // drop-off in cm
+const float RELEASE_GAP_MM = 3.0f;  // let go this far above the resting height
 const float LIFT_MM        = 60.0f; // approach / retreat height above a block
-const float MIN_GRIP_Z_MM  = 10.0f;  // never drive the grip point below this (paper = 0)
+const float MIN_GRIP_Z_MM  = 8.0f;  // never drive the grip point below this (paper = 0)
 
 const bool    TOWER_MODE = true;    // extra credit: stack placed blocks into a tower
 const uint8_t TOWER_MAX  = 3;
@@ -72,24 +72,25 @@ const uint8_t TOWER_MAX  = 3;
 //    lo/hi: allowed servo range (degrees). Solutions outside it are rejected.
 //    Use the "j" and "d" commands to find these values (see notes at bottom).
 // ============================================================================
-struct Joint { const char* name; uint8_t ch; float zero; int8_t dir; float lo; float hi; };
+struct Joint { const char* name; uint8_t ch; float zero; float dir; float lo; float hi; };
 enum { BASE = 0, SHOULDER, ELBOW, WRIST_P, WRIST_R, GRIP };
  
 Joint J[6] = {
   // name        ch  zero  dir  lo  hi
-  { "base",      0,  85,   +1,   0,  180 },   // th1 = 0  -> arm points along x0
-  { "shoulder",  1,   5,   +1,   0,  180 },   // th2 = 0  -> upper arm horizontal, 90 = vertical
-  { "elbow",     2,  90,   -1,   0,  180 },   // th3 = 0  -> forearm in line with upper arm
-  { "wrist",     3,  80,   -1,   0,  180 },   // th4 = 0  -> gripper perpendicular to forearm
-  { "roll",      4,  95,   -1,   0,  180 },   // th5 = 0  -> jaws in their neutral orientation
-  { "gripper",   5,   0,   -1,   0,  180 },
+  { "base",      0,  84,   +1.08f,   0,  180 },   // th1 = 0  -> arm points along x0
+  { "shoulder",  1,   5,   +1.15f,   0,  180 },   // th2 = 0  -> upper arm horizontal, 90 = vertical
+  { "elbow",     2,  90,   -1.1f,   0,  180 },   // th3 = 0  -> forearm in line with upper arm
+  { "wrist",     3,  90,   -1.15f,   0,  180 },   // th4 = 0  -> gripper perpendicular to forearm
+  { "roll",      4,  85,   +1.1f,    0,  180 },   // th5 = 0  -> jaws in their neutral orientation
+  { "gripper",   5,   90,   -1.0f,    0,  180 },
 };
 
 const float GRIP_OPEN_DEG   = 40.0f;   // servo angle with jaws open wider than a block
 const float GRIP_CLOSED_DEG = 105.0f;  // servo angle that just squeezes a block
-const bool  ALIGN_ROLL      = false;    // turn the wrist so the jaws stay square to the grid
+const bool  ALIGN_ROLL      = true;    // turn the wrist so the jaws stay square to the grid
 
-const int   SERVO_US_MIN = 600;        // pulse width at 0 deg   (MG996R ~500-2500 us)
+
+const int   SERVO_US_MIN = 620;        // pulse width at 0 deg   (MG996R ~500-2500 us)
 const int   SERVO_US_MAX = 2400;       // pulse width at 180 deg
 // ---- Trapezoidal velocity profile ("trapezoidal input shaping") ----
 // Every move accelerates at A_MAX, cruises at V_MAX, decelerates at A_MAX.
@@ -461,7 +462,7 @@ void pickAndPlace(uint8_t idx) {
 
   if (TOWER_MODE) {
     towerCount++;
-    Serial.print(F("Done. Tower at [5,5] is now ")); Serial.print(towerCount); Serial.println(F(" block(s) high."));
+    Serial.print(F("Done. Tower at [10,8] is now ")); Serial.print(towerCount); Serial.println(F(" block(s) high."));
   } else Serial.println(F("Done."));
   Serial.println(F("Type r to re-run this position with another solution, or a new x y z."));
 }
