@@ -1,4 +1,4 @@
-// ik.h — inverse / forward kinematics for the UH ECE servo arm
+// inverseKin.h — inverse / forward kinematics for the UH ECE servo arm
 // DH table (HW3):
 //   link | alpha | r       | d        | theta
 //   1    | pi/2  | 0       | d1=110mm | th1
@@ -6,8 +6,6 @@
 //   3    | 0     | r3=99   | 0        | th3
 //   4    | pi/2  | 0       | 0        | th4
 //   5    | 0     | 0       | d5=168   | th5   (wrist roll, does not move the tool point)
-//
-// Plain C++ (no Arduino calls) so it can be unit-tested on a PC.
 #pragma once
 #include <math.h>
 
@@ -15,14 +13,14 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-namespace ik {
+namespace inverseKin {
 
-struct ArmGeom {
+struct ArmGeometry {
   float d1, r2, r3, d5;   // mm
 };
 
 struct Solution {
-  float th[4];       // th1..th4 in radians (DH convention)
+  float theta[4];       // th1..th4 in radians (DH convention)
   bool reachable;    // geometrically reachable (|D| <= 1)
   bool back;         // behind-the-back branch (th1 = atan2(oy,ox) + pi)
   bool elbowUp;      // elbow joint is the higher of the two elbow options
@@ -38,19 +36,18 @@ inline float wrapPi(float a) {
 //   (px,py,pz) : desired tool point in frame 0 (mm)
 //   pitch      : direction the gripper points, measured from horizontal (pointing
 //                radially away from the base) — radians. -pi/2 = straight down.
-//   sol[4]     : filled in this order
+//   solution[4]: filled in this order
 //                0 = front, elbow up     1 = front, elbow down
 //                2 = back,  elbow up     3 = back,  elbow down
 // Returns the number of geometrically reachable solutions (0, 2 or 4).
-inline int solve(const ArmGeom& g, float px, float py, float pz, float pitch,
-                 Solution sol[4]) {
+inline int solve(const ArmGeometry& g, float px, float py, float pz, float pitch, Solution solution[4]) {
   const float rxy = sqrtf(px * px + py * py);
   const float psi = (rxy < 1e-4f) ? 0.0f : atan2f(py, px);
   int count = 0;
 
   for (int b = 0; b < 2; b++) {
-    // th1: front = atan2(oy,ox), behind-the-back = front + pi
-    const float th1 = b ? wrapPi(psi + (float)M_PI) : psi;
+    // theta1: front = atan2(oy,ox), behind-the-back = front + pi
+    const float theta1 = b ? wrapPi(psi + (float)M_PI) : psi;
     // Coordinates in the arm plane (x1 horizontal, y1 = z0 vertical).
     // Behind the back, x1 points away from the target, so the radial distance is negative.
     const float u = b ? -rxy : rxy;
